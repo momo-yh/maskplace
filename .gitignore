@@ -1,0 +1,15 @@
+.vscode/launch.json
+maskplace/logs
+maskplace/figures
+maskplace/pl_logs
+maskplace/tb_log
+maskplace/archived
+run*
+*log
+__pycache__/
+maskplace/save_models
+env_test
+
+
+
+adaptec*

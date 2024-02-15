@@ -2,7 +2,7 @@
 
 from google.protobuf import text_format
 
-import laiyao_pb2
+import ariane.laiyao_pb2 as laiyao_pb2
 
 
 def load_pbtxt_file(path):

@@ -1,62 +1,61 @@
+## not used
+
 import math
 import gym
 from gym import spaces
 import numpy as np
 import sys
 sys.path.append("..")
-from place_db import PlaceDB
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import time
 
 class PlaceEnv(gym.Env):
 
-    def __init__(self, placedb, placed_num_macro = None, grid = 224):
+    def __init__(self, placedb, placed_num_macro = None, grid_width = 200, grid_height = 150): 
         
         # need to get GCN vector and CNN
-        print("grid * grid", grid * grid)
+        print("grid_width*grid_height", grid_width*grid_height)
         print("placedb.node_cnt", placedb.node_cnt)
         print("placedb.net_cnt", placedb.net_cnt)
-        assert grid * grid >= placedb.node_cnt 
-        self.grid = grid
-        self.max_height = placedb.max_height
-        self.max_width = placedb.max_width
-        self.placedb = placedb
+        assert grid_width*grid_height >= placedb.node_cnt 
+        self.grid_width = grid_width
+        self.grid_height = grid_height
+
         self.num_macro = placedb.node_cnt
         self.placed_num_macro = placed_num_macro
         self.num_net = placedb.net_cnt
         self.node_name_list = placedb.node_id_to_name
-        self.action_space = spaces.Discrete(self.grid * self.grid)
+
+        self.action_space = spaces.Discrete(grid_width*grid_height)
         self.state = None
         self.net_min_max_ord = {}
         self.node_pos = {}
         self.net_placed_set = {}
         self.last_reward = 0
         self.num_macro_placed = 0
-        self.node_x_max = 0
-        self.node_x_min = self.grid
-        self.node_y_max = 0
-        self.node_y_min = self.grid
-        self.ratio = self.placedb.max_height / self.grid
+
         print("self.ratio = {:.2f}".format(self.ratio))
     
     def reset(self):
         self.num_macro_placed = 0
-        num_macro = self.num_macro
-        canvas = np.zeros((self.grid, self.grid))
+        canvas = np.zeros((self.grid_width, self.grid_height))
         self.node_pos = {}
+
+        '''[4] min_x, max_x, min_y, max_y'''
         self.net_min_max_ord = {}
-        self.net_fea = np.zeros((self.num_net, 4))
+        self.net_fea = np.zeros((self.num_net, 4)) 
         self.net_fea[:, 0] = 0
         self.net_fea[:, 1] = 1.0
         self.net_fea[:, 2] = 0
         self.net_fea[:, 3] = 1.0
-        self.rudy = np.zeros((self.grid, self.grid))
+        # self.rudy = np.zeros((self.grid_width, self.grid_height))
         for port_name in self.placedb.port_to_net_dict:
             for net_name in self.placedb.port_to_net_dict[port_name]:
                 pin_x = round(self.placedb.port_info[port_name]['x'] / self.ratio)
                 pin_y = round(self.placedb.port_info[port_name]['y'] / self.ratio)
                 if net_name in self.net_min_max_ord:
+                    '''min max x y of net'''
                     if pin_x > self.net_min_max_ord[net_name]['max_x']:
                         self.net_min_max_ord[net_name]['max_x'] = pin_x
                         self.net_fea[self.placedb.net_info[net_name]['id']][1] = pin_x / self.grid
@@ -79,31 +78,35 @@ class PlaceEnv(gym.Env):
                     self.net_fea[self.placedb.net_info[net_name]['id']][0] = pin_x / self.grid
                     self.net_fea[self.placedb.net_info[net_name]['id']][3] = pin_y / self.grid
                     self.net_fea[self.placedb.net_info[net_name]['id']][2] = pin_y / self.grid
-        self.net_placed_set = {}
-        self.num_macro_placed = 0
         
-        net_img = np.zeros((self.grid, self.grid))
-        net_img_2 = np.zeros((self.grid, self.grid))
+        '''reset wire mask'''
+        net_img = np.zeros((self.grid_width, self.grid_height))
+        net_img_2 = np.zeros((self.grid_width, self.grid_height))
 
+        '''position mask the area that is not allowed to place, 
+        The occupied area is then marked as 1 in the mask array.'''
         next_x = math.ceil(max(1, self.placedb.node_info[self.node_name_list[self.num_macro_placed]]['x'] / self.ratio))
         next_y = math.ceil(max(1, self.placedb.node_info[self.node_name_list[self.num_macro_placed]]['y'] / self.ratio))
         mask = self.get_mask(canvas, next_x, next_y)
         next_x_2 = math.ceil(max(1, self.placedb.node_info[self.node_name_list[self.num_macro_placed+1]]['x'] / self.ratio))
         next_y_2 = math.ceil(max(1, self.placedb.node_info[self.node_name_list[self.num_macro_placed+1]]['y'] / self.ratio))
         mask_2 = self.get_mask(canvas, next_x_2, next_y_2)
+
+        '''reset placed '''
+        self.net_placed_set = {}
+        self.num_macro_placed = 0
         for net_name in self.placedb.net_info:
             self.net_placed_set[net_name] = set()
+        
+        '''state representation'''
         self.state = np.concatenate((np.array([self.num_macro_placed]), canvas.flatten(), 
             net_img.flatten(), mask.flatten(), net_img_2.flatten(), mask_2.flatten(), 
             np.array([next_x/self.grid, next_y/self.grid])), axis = 0)
-        self.node_x_max = 0
-        self.node_x_min = self.grid
-        self.node_y_max = 0
-        self.node_y_min = self.grid
 
         return self.state
 
     def save_fig(self, file_path):
+        '''save the placement result as a figure'''
         fig1 = plt.figure()
         ax1 = fig1.add_subplot(111, aspect='equal')
         ax1.axes.xaxis.set_visible(False)
@@ -120,21 +123,24 @@ class PlaceEnv(gym.Env):
         fig1.savefig(file_path, dpi=90, bbox_inches='tight')
         plt.close()
 
-    def save_wiremask(self, file_path):
-        # Plotting the net_img array
-        fig = plt.figure()
-        ax = fig.add_subplot(111, aspect='equal')
-        ax.axes.xaxis.set_visible(False)
-        ax.axes.yaxis.set_visible(False)
-
-        # Plotting the net_img array
-        ax.imshow(self.get_net_img())
-        fig.savefig(file_path, dpi=90, bbox_inches='tight')
-        plt.close()
+    # PositionMask
+    def get_mask(self, next_x, next_y):
+        mask = np.zeros((self.grid_width, self.grid_height))
+        for node_name in self.node_pos:
+            startx = max(0, self.node_pos[node_name][0] - next_x + 1)
+            starty = max(0, self.node_pos[node_name][1] - next_y + 1)
+            endx = min(self.node_pos[node_name][0] + self.node_pos[node_name][2] - 1, self.grid - 1)
+            endy = min(self.node_pos[node_name][1] + self.node_pos[node_name][3] - 1, self.grid - 1)
+            mask[startx: endx + 1, starty : endy + 1] = 1
+        
+        mask[self.grid - next_x + 1:,:] = 1  ##TODO self.grid
+        mask[:, self.grid - next_y + 1:] = 1
+        '''exclude the area that is not allowed to place, The occupied area is then marked as 1 in the mask array.'''
+        return mask
 
     # WireMask
     def get_net_img(self, is_next_next = False):
-        net_img = np.zeros((self.grid, self.grid))
+        net_img = np.zeros((self.grid_width, self.grid_height))
         if not is_next_next:
             next_node_name = self.placedb.node_id_to_name[self.num_macro_placed]
         elif self.num_macro_placed + 1 < len(self.placedb.node_id_to_name):
@@ -144,6 +150,7 @@ class PlaceEnv(gym.Env):
 
         for net_name in self.placedb.node_to_net_dict[next_node_name]:
             if net_name in self.net_min_max_ord:
+                # HPWL with pin offset
                 delta_pin_x = round((self.placedb.node_info[next_node_name]['x']/2 + \
                     self.placedb.net_info[net_name]["nodes"][next_node_name]["x_offset"])/self.ratio)
                 delta_pin_y = round((self.placedb.node_info[next_node_name]['y']/2 + \
@@ -169,16 +176,19 @@ class PlaceEnv(gym.Env):
         return net_img
 
     def step(self, action):
+        '''chech if the action is valid'''
         err_msg = f"{action!r} ({type(action)}) invalid"
         assert self.action_space.contains(action), err_msg
 
-        canvas = self.state[1: 1+self.grid*self.grid].reshape(self.grid, self.grid)
-        mask = self.state[1+self.grid*self.grid*2: 1+self.grid*self.grid*3].reshape(self.grid, self.grid)
+        '''extract the state'''
+        canvas = self.state[1: 1+self.grid_width*self.grid_height].reshape(self.grid_width, self.grid_height)
+        mask = self.state[1+self.grid_width*self.grid_height*2: 1+self.grid_width*self.grid_height*3].reshape(self.grid_width, self.grid_height)
+        
         reward = 0
         x = round(action // self.grid)
         y = round(action % self.grid)
     
-        if mask[x][y] == 1:
+        if mask[x][y] == 1: ##TODO: forbid the action for overlapping place 1 or 0
             reward += -200000
                 
         node_name = self.placedb.node_id_to_name[self.num_macro_placed]
@@ -188,6 +198,7 @@ class PlaceEnv(gym.Env):
         assert abs(size_x - self.state[-2]*self.grid) < 1e-5
         assert abs(size_y - self.state[-1]*self.grid) < 1e-5
 
+        '''place in canvas'''
         canvas[x : x+size_x, y : y+size_y] = 1.0
         canvas[x : x + size_x, y] = 0.5
         if y + size_y -1 < self.grid:
@@ -197,6 +208,7 @@ class PlaceEnv(gym.Env):
             canvas[max(0, x+size_x-1), y: y + size_y] = 0.5
         self.node_pos[self.node_name_list[self.num_macro_placed]] = (x, y, size_x, size_y)
 
+        '''reward for wirelength'''
         for net_name in self.placedb.node_to_net_dict[node_name]:
             self.net_placed_set[net_name].add(node_name)
             pin_x = round((x * self.ratio + self.placedb.node_info[node_name]['x']/2 + \
@@ -255,10 +267,10 @@ class PlaceEnv(gym.Env):
                 self.net_fea[self.placedb.net_info[net_name]['id']][2] = pin_y / self.grid
                 reward += 0
 
+        '''get wire mask'''
         self.num_macro_placed += 1
-        net_img = np.zeros((self.grid, self.grid))
-        net_img_2 = np.zeros((self.grid, self.grid))
-
+        net_img = np.zeros((self.grid_width, self.grid_height))
+        net_img_2 = np.zeros((self.grid_width, self.grid_height))
         if self.num_macro_placed < self.placed_num_macro:
             net_img = self.get_net_img()
             net_img_2 = self.get_net_img(is_next_next= True)
@@ -266,22 +278,10 @@ class PlaceEnv(gym.Env):
                 net_img /= max(net_img.max(), net_img_2.max())
                 net_img_2 /= max(net_img.max(), net_img_2.max())
 
-        if self.node_x_max < x:
-            self.node_x_max = x
-        if self.node_x_min > x:
-            self.node_x_min = x
-        if self.node_y_max < y:
-            self.node_y_max = y
-        if self.node_y_min > y:
-            self.node_y_min = y
 
-        if self.num_macro_placed == self.num_macro or \
-            (self.placed_num_macro is not None and self.num_macro_placed == self.placed_num_macro): 
-            done = True
-        else:
-            done = False
-        mask = np.ones((self.grid, self.grid))
-        mask_2 = np.ones((self.grid, self.grid))
+        '''get position mask'''
+        mask = np.ones((self.grid_width, self.grid_height))
+        mask_2 = np.ones((self.grid_width, self.grid_height))
         if not done: # get next macro size and pre-mask the solution
             next_x = math.ceil(max(1, self.placedb.node_info[self.placedb.node_id_to_name[self.num_macro_placed]]['x']/self.ratio))
             next_y = math.ceil(max(1, self.placedb.node_info[self.placedb.node_id_to_name[self.num_macro_placed]]['y']/self.ratio))
@@ -293,22 +293,19 @@ class PlaceEnv(gym.Env):
         else:
             next_x = 0
             next_y = 0
+
+        '''done signal update'''
+        if self.num_macro_placed == self.num_macro or \
+            (self.placed_num_macro is not None and self.num_macro_placed == self.placed_num_macro): 
+            done = True
+        else:
+            done = False
+
+        '''generate state representation'''
         self.state = np.concatenate((np.array([self.num_macro_placed]), canvas.flatten(), 
             net_img.flatten(), mask.flatten(), net_img_2.flatten(), mask_2.flatten(),
             np.array([next_x/self.grid, next_y/self.grid])), axis = 0)
+        
         return self.state, reward, done, {"raw_reward": reward, "net_img": net_img, "mask": mask}
     
-    # PositionMask
-    def get_mask(self, canvas, next_x, next_y):
-        mask = np.zeros((self.grid, self.grid))
-        for node_name in self.node_pos:
-            startx = max(0, self.node_pos[node_name][0] - next_x + 1)
-            starty = max(0, self.node_pos[node_name][1] - next_y + 1)
-            endx = min(self.node_pos[node_name][0] + self.node_pos[node_name][2] - 1, self.grid - 1)
-            endy = min(self.node_pos[node_name][1] + self.node_pos[node_name][3] - 1, self.grid - 1)
-            mask[startx: endx + 1, starty : endy + 1] = 1
-        mask[self.grid - next_x + 1:,:] = 1
-        mask[:, self.grid - next_y + 1:] = 1
-        return mask
-
     

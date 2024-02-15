@@ -1,29 +1,23 @@
 import argparse
-import pickle
 from collections import namedtuple
-
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import numpy as np
-import matplotlib.pyplot as plt
-
 import gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.distributions import Normal
 from torch.distributions import Categorical
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
-
-import place_env
 import torchvision
-from place_db import PlaceDB
 import time
 from tqdm import tqdm
 import random
-from comp_res import comp_res
 from torch.utils.tensorboard import SummaryWriter   
+
+from place_db import PlaceDB
+from comp_res import comp_res 
 
 # set device to cpu or cuda
 device = torch.device('cuda')
@@ -39,7 +33,7 @@ else:
 parser = argparse.ArgumentParser(description='Solve the Pendulum-v0 with PPO')
 parser.add_argument(
     '--gamma', type=float, default=0.95, metavar='G', help='discount factor (default: 0.9)')
-parser.add_argument('--seed', type=int, default=42, metavar='N', help='random seed (default: 0)')
+# parser.add_argument('--seed', type=int, default=42, metavar='N', help='random seed (default: 0)')
 parser.add_argument('--disable_tqdm', type=int, default=1)
 parser.add_argument('--lr', type=float, default=2.5e-3)
 parser.add_argument(
@@ -56,20 +50,28 @@ parser.add_argument('--is_test', action='store_true', default=False)
 parser.add_argument('--save_fig', action='store_true', default=True)
 parser.add_argument('--pretrain', type=str, default=None)
 args = parser.parse_args()
-writer = SummaryWriter('./tb_log')
 
+# basic setting
+writer = SummaryWriter('./tb_log')
 benchmark = args.benchmark
-placedb = PlaceDB(benchmark)
-grid = 224
-placed_num_macro = args.pnm
+placedb = PlaceDB(benchmark)##TODO
+grid_width = placedb.grid_width
+grid_height = placedb.grid_height
+grid_num = grid_width * grid_height
+
+##TODO what is placed_num_macro?
+placed_num_macro = args.pnm 
 if args.pnm > placedb.node_cnt:
     placed_num_macro = placedb.node_cnt
     args.pnm = placed_num_macro
-env = gym.make('place_env-v0', placedb = placedb, placed_num_macro = placed_num_macro, grid = grid).unwrapped
 
+env = gym.make('place_env-v0', placedb = placedb, placed_num_macro = placed_num_macro, grid_width = 300, grid_height = 200).unwrapped
+
+#TODO what is num_emb_state?
 num_emb_state = 64 + 2 + 1
-num_state = 1 + grid*grid*5 + 2
+num_state = 1 + grid_width*grid_height*5 + 2
 
+#TODO
 def seed_torch(seed=0):
     random.seed(seed)
     np.random.seed(seed)
@@ -129,9 +131,9 @@ class MyCNNCoarse(nn.Module):
 class Actor(nn.Module):
     def __init__(self, cnn, gcn, cnn_coarse):
         super(Actor, self).__init__()
-        # self.fc1 = nn.Linear(num_emb_state, 512)
-        # self.fc2 = nn.Linear(512, 64)
-        # self.fc3 = nn.Linear(64, grid * grid)
+        self.fc1 = nn.Linear(num_emb_state, 512)
+        self.fc2 = nn.Linear(512, 64)
+        self.fc3 = nn.Linear(64, grid_num)
         self.cnn = cnn
         self.cnn_coarse = cnn_coarse
         self.gcn = None ##TODO
@@ -140,25 +142,23 @@ class Actor(nn.Module):
 
     def forward(self, x, graph = None, cnn_res = None, gcn_res = None, graph_node = None):
         if not cnn_res:
-            # Assuming x is a 1D tensor with size (1 + grid*grid*5 + 2)
-            x = x.reshape(-1, 1 + grid*grid*5 + 2)
-
-            cnn_input = x[:, 1+grid*grid*1: 1+grid*grid*5].reshape(-1, 4, grid, grid)
-            mask = x[:, 1+grid*grid*2: 1+grid*grid*3].reshape(-1, grid, grid)
+            ## extract state information, the code is not clear
+            cnn_input = x[:, 1+grid_num*1: 1+grid_num*5].reshape(-1, 4, grid_width, grid_height)
+            mask = x[:, 1+grid_num*2: 1+grid_num*3].reshape(-1, grid_width, grid_height)
             mask = mask.flatten(start_dim=1, end_dim=2)
             cnn_res = self.cnn(cnn_input)
-            coarse_input = torch.cat((x[:, 1: 1+grid*grid*2].reshape(-1, 2, grid, grid),
-                                        x[:, 1+grid*grid*3: 1+grid*grid*4].reshape(-1, 1, grid, grid)
-                                        ),dim= 1).reshape(-1, 3, grid, grid)
+            coarse_input = torch.cat((x[:, 1: 1+grid_num*2].reshape(-1, 2, grid_width, grid_height),
+                                        x[:, 1+grid_num*3: 1+grid_num*4].reshape(-1, 1, grid_width, grid_height)
+                                        ),dim= 1).reshape(-1, 3, grid_width, grid_height)
             cnn_coarse_res = self.cnn_coarse(coarse_input)
             cnn_res = self.merge(torch.cat((cnn_res, cnn_coarse_res), dim=1))
-        net_img = x[:, 1+grid*grid: 1+grid*grid*2]
-        net_img = net_img + x[:, 1+grid*grid*2: 1+grid*grid*3] * 10
+        net_img = x[:, 1+grid_num: 1+grid_num*2]
+        net_img = net_img + x[:, 1+grid_num*2: 1+grid_num*3] * 10
         net_img_min = net_img.min() + args.soft_coefficient
         mask2 = net_img.le(net_img_min).logical_not().float()
 
         x = cnn_res
-        x = x.reshape(-1, grid * grid)
+        x = x.reshape(-1, grid_num)
         x = torch.where(mask + mask2 >=1.0, -1.0e10, x.double())
         x = self.softmax(x)
 
@@ -220,6 +220,7 @@ class PPO():
         action_log_prob = dist.log_prob(action)
         return action.item(), action_log_prob.item()
 
+    ## TODO what is get_value used for? not used in the code?
     def get_value(self, state):
         state = torch.from_numpy(state)
         with torch.no_grad():
@@ -234,6 +235,7 @@ class PPO():
                     "critic_net_dict": self.critic_net.state_dict()},
                     "./save_models/net_dict-{}-{}-".format(benchmark, placed_num_macro)+strftime+"{}".format(int(running_reward))+".pkl")
 
+    ## TODO transition used for what? update parameters?
     def store_transition(self, transition):
         self.buffer.append(transition)
         self.counter+=1
@@ -288,46 +290,31 @@ class PPO():
                 writer.add_scalar('value_loss', value_loss, self.training_step)
 
 
-def save_placement(file_path, node_pos, ratio):
-    fwrite = open(file_path, 'w')
-    node_place = {}
-    for node_name in node_pos:
-
-        x, y,_ , _ = node_pos[node_name]
-        x = round(x * ratio + ratio) 
-        y = round(y * ratio + ratio)
-        node_place[node_name] = (x, y)
-    print("len node_place", len(node_place))
-    for node_name in placedb.node_info:
-        if node_name not in node_place:
-            continue
-        x, y = node_place[node_name]
-        fwrite.write('{}\t{}\t{}\t:\tN /FIXED\n'.format(node_name, x, y))
-    print(".pl has been saved to {}.".format(file_path))
-
-
 def main():
 
     agent = PPO()
     strftime = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()) 
     
-    training_records = []
+    # training_records = []
     running_reward = -1000000
     
-
+    '''log file'''
     log_file_name = "logs/log_"+ benchmark + "_" + strftime + "_seed_"+ str(args.seed) + "_pnm_" + str(args.pnm) + ".csv"
     if not os.path.exists("logs"):
         os.mkdir("logs")
     fwrite = open(log_file_name, "w")
+    
+    '''pretrain model'''
     load_model_path = args.pretrain
-   
     if load_model_path:
        agent.load_param(load_model_path)
     
-    best_reward = running_reward
+    '''test mode or train mode'''
     if args.is_test:
         torch.inference_mode()
 
+    '''train'''
+    best_reward = running_reward
     for i_epoch in range(100000):
         score = 0
         raw_score = 0
@@ -338,6 +325,7 @@ def main():
         while done is False:
             state_tmp = state.copy()
             action, action_log_prob = agent.select_action(state)
+        
             next_state, reward, done, info = env.step(action)
             assert next_state.shape == (num_state, )
             reward_intrinsic = 0
@@ -345,7 +333,7 @@ def main():
                 trans = Transition(state_tmp, action, reward / 200.0, action_log_prob, next_state, reward_intrinsic)
             if not args.is_test and agent.store_transition(trans):                
                 assert done == True
-                agent.update()
+                agent.update() ## update parameters using buffer of transitions
             score += reward
             raw_score += info["raw_reward"]
             state = next_state
@@ -379,27 +367,12 @@ def main():
             hpwl, cost = comp_res(placedb, env.node_pos, env.ratio)
             print("hpwl = {:.2f}\tcost = {:.2f}".format(hpwl, cost))
             print("time = {}s".format(end-start))
-            if not os.path.exists("pl_logs"):
-                os.mkdir("pl_logs")
-            pl_file_path = "./pl_logs/{}-{}-{}.pl".format(benchmark, int(hpwl), time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()) ) 
-            save_placement(pl_file_path, env.node_pos, env.ratio)
-            strftime_now = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
-            # pl_path = 'gg_place_new/{}-{}-{}-{}.pl'.format(benchmark, strftime_now, int(hpwl), int(cost))
-            # fwrite_pl = open(pl_path, 'w')
-            # for node_name in env.node_pos:
-            #     if node_name == "V":
-            #         continue
-            #     x, y, size_x, size_y = env.node_pos[node_name]
-            #     x = x * env.ratio + placedb.node_info[node_name]['x'] /2.0
-            #     y = y * env.ratio + placedb.node_info[node_name]['y'] /2.0
-            #     fwrite_pl.write("{}\t{:.4f}\t{:.4f}\n".format(node_name, x, y))
-            # fwrite_pl.close()
             strftime_now = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
             if not os.path.exists("figures"):
                 os.mkdir("figures")
             env.save_fig("./figures/{}-{}-{}-{}.png".format(benchmark, strftime_now, int(hpwl), int(cost)))
         
-        training_records.append(TrainingRecord(i_epoch, running_reward))
+        # training_records.append(TrainingRecord(i_epoch, running_reward))
         if i_epoch % 1 ==0:
             print("Epoch {}, Moving average score is: {:.2f} ".format(i_epoch, running_reward))
             fwrite.write("{},{},{:.2f},{}\n".format(i_epoch, score, running_reward, agent.training_step))
@@ -410,36 +383,8 @@ def main():
             env.close()
             agent.save_param()
             break
-        if i_epoch % 100 == 0:
-            if placed_num_macro is None:
-                env.write_gl_file("./gl/{}{}.gl".format(strftime, int(score)))
+
 
         
 if __name__ == '__main__':
     main()
-    # import torch
-    # from torchsummary import summary
-    # from torchviz import make_dot
-
-    # from PPO2 import Actor
-
-    # gcn = None
-    # resnet = torchvision.models.resnet18(pretrained=True)
-    # cnn = MyCNN().to(device)
-    # cnn_coarse = MyCNNCoarse(resnet).to(device)
-
-    # # Assuming you have an instance of your Actor class
-    # actor = Actor(cnn, gcn, cnn_coarse).float().to(device)
-
-    # # Print a summary of the model
-    # summary(actor, input_size=(1 + grid*grid*5 + 2,))
-
-    # # Create a visualization of the computational graph
-    # # Create a dummy input
-    # dummy_input = torch.rand((1 + grid*grid*5 + 2,)).float().to(device)
-
-    # # Pass the dummy input through the model
-    # output = actor(dummy_input)
-
-    # graph = make_dot(output, params=dict(actor.named_parameters()))
-    # graph.render("actor_network", format="png", cleanup=True)
